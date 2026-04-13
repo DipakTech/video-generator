@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ne">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nepali News Video Generator</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Noto+Sans+Devanagari:wdth,wght@100,400;100,700&family=Noto+Sans:wght@400;600;700&family=Mukta:wght@400;700&family=Tiro+Devanagari&family=Baloo+2:wght@400;700&family=Yatra+One&family=Hind:wght@400;700&family=Poppins:wght@400;700&family=Oswald:wght@400;700&family=Merriweather:wght@400;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      body { font-family: 'Noto Sans Devanagari', 'Noto Sans', sans-serif; }
+      .font-preload {
+        position: absolute;
+        opacity: 0;
+        pointer-events: none;
+        font-size: 1px;
+        top: -9999px;
+        font-family: 'Noto Sans Devanagari', sans-serif;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="font-preload" aria-hidden="true">
+      अआइईउऊएऐओऔककखगघचछजझटठडढणतथदधनपफबभमयरलवशषसह
+    </div>
+    <div id="root"></div>
+    <script type="module" src="/src/index.tsx"></script>
+  </body>
+</html>
