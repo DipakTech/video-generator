@@ -25,7 +25,7 @@ const PreviewCanvas = forwardRef<PreviewCanvasHandle, PreviewCanvasProps>(
     }, [width, height]);
 
     return (
-      <div className="mx-auto w-full overflow-hidden rounded-xl border border-border/70 bg-card/20 p-2 shadow-sm">
+      <div className="fullscreen-canvas-inner mx-auto w-full overflow-hidden rounded-xl border border-border/70 bg-card/20 p-2 shadow-sm">
         <canvas
           ref={canvasRef}
           width={width}

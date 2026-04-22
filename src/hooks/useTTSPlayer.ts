@@ -4,6 +4,7 @@ interface SpeakOptions {
   text: string;
   rate?: number;
   pitch?: number;
+  onStart?: () => void;
   onEnd?: (event: SpeechSynthesisEvent) => void;
   onBoundary?: (event: SpeechSynthesisEvent) => void;
 }
@@ -30,6 +31,7 @@ export function useTTSPlayer(): TTSPlayer {
     text,
     rate = 1,
     pitch = 1,
+    onStart,
     onEnd,
     onBoundary,
   }: SpeakOptions): SpeechSynthesisUtterance => {
@@ -41,7 +43,8 @@ export function useTTSPlayer(): TTSPlayer {
 
     const nepVoice = getNepaliVoice();
     if (nepVoice) utterance.voice = nepVoice;
-    if (onEnd) utterance.onend = onEnd;
+    if (onStart)    utterance.onstart = () => onStart();
+    if (onEnd)      utterance.onend = onEnd;
     if (onBoundary) utterance.onboundary = onBoundary;
 
     utterRef.current = utterance;

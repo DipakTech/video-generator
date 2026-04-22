@@ -9,7 +9,7 @@ import VideoGeneratorHeader from "./video-generator/VideoGeneratorHeader";
 import VideoGeneratorWorkspace from "./video-generator/VideoGeneratorWorkspace";
 import { buildWordTimings } from "../hooks/useWordTimings";
 import { buildAlignedTimings } from "../hooks/useTimingAlign";
-import { drawFrame, layoutWords } from "../hooks/canvasRenderer";
+import { computeScrollY, drawFrame, layoutWords, LayoutResult } from "../hooks/canvasRenderer";
 import { useAudioSync } from "../hooks/useAudioSync";
 import { useGeminiTTS } from "../hooks/useGeminiTTS";
 import { useTTSPlayer } from "../hooks/useTTSPlayer";
@@ -101,6 +101,8 @@ export default function VideoGenerator() {
 
   const canvasRef = useRef<PreviewCanvasHandle | null>(null);
   const timingsRef = useRef<PositionedWordTiming[]>([]);
+  const totalTextHRef = useRef(0);
+  const isTeleprompterRef = useRef(false);
   const rafRef = useRef<number | null>(null);
   const pauseAtRef = useRef(0);
   const audioModeRef = useRef<AudioMode>(audioMode);
@@ -132,6 +134,12 @@ export default function VideoGenerator() {
       if (!canvas || !timingsRef.current.length) return;
       const cfg = configRef.current;
       const { w, h } = parseResolution(cfg.resolution);
+      const scrollY = computeScrollY(
+        timingsRef.current,
+        t,
+        h,
+        totalTextHRef.current,
+      );
       drawFrame(
         canvas,
         timingsRef.current,
@@ -145,6 +153,7 @@ export default function VideoGenerator() {
           fontFamily: cfg.fontFamily,
         },
         t,
+        scrollY,
       );
     },
     [getCanvas],
@@ -159,7 +168,7 @@ export default function VideoGenerator() {
       canvas.height = h;
 
       const fontSize = scaledFontSize(cfg.fontSize, cfg.resolution);
-      const laid = layoutWords(canvas, timings, {
+      const result: LayoutResult = layoutWords(canvas, timings, {
         w,
         h,
         bodySize: fontSize,
@@ -168,7 +177,11 @@ export default function VideoGenerator() {
         padFraction: 0.07,
       });
 
-      timingsRef.current = laid;
+      timingsRef.current = result.words;
+      totalTextHRef.current = result.totalTextH;
+      // Detect overflow: 14% of canvas is header, rest is body
+      const headerH = h * 0.14;
+      isTeleprompterRef.current = result.totalTextH > (h - headerH);
       setTotalDuration(dur);
       setCurrentTime(0);
       pauseAtRef.current = 0;
@@ -176,7 +189,7 @@ export default function VideoGenerator() {
 
       drawFrame(
         canvas,
-        laid,
+        result.words,
         {
           w,
           h,
@@ -186,6 +199,7 @@ export default function VideoGenerator() {
           animMode: cfg.animMode,
           fontFamily: cfg.fontFamily,
         },
+        0,
         0,
       );
     },
@@ -209,8 +223,9 @@ export default function VideoGenerator() {
           }
           const timings = buildAlignedTimings(cfg.body, audioDuration);
           layoutAndDraw(cfg, timings, audioDuration);
+          const tpNote = isTeleprompterRef.current ? ' 📜 Teleprompter' : '';
           setStatus(
-            `Ready - ${timingsRef.current.length} words synced to ${fmtDur(audioDuration)} audio`,
+            `Ready - ${timingsRef.current.length} words synced to ${fmtDur(audioDuration)} audio${tpNote}`,
           );
           return;
         }
@@ -230,8 +245,9 @@ export default function VideoGenerator() {
             });
             audioSync.loadBuffer(audioBuffer);
             layoutAndDraw(cfg, timings, duration);
+            const tpNoteG = isTeleprompterRef.current ? ' 📜 Teleprompter' : '';
             setStatus(
-              `Gemini TTS ready - ${timings.length} words - ${fmtDur(duration)}`,
+              `Gemini TTS ready - ${timings.length} words - ${fmtDur(duration)}${tpNoteG}`,
             );
           } catch (error: unknown) {
             setGeminiError(
@@ -249,7 +265,8 @@ export default function VideoGenerator() {
           cfg.rate,
         );
         layoutAndDraw(cfg, timings, dur);
-        setStatus(`Ready - ${timings.length} words - ~${dur.toFixed(1)}s`);
+        const teleprompterNote = isTeleprompterRef.current ? ' 📜 Teleprompter' : '';
+        setStatus(`Ready - ${timings.length} words - ~${dur.toFixed(1)}s${teleprompterNote}`);
       } finally {
         setIsGenerating(false);
       }
@@ -381,18 +398,23 @@ export default function VideoGenerator() {
         return;
       }
 
-      const t0 = performance.now() / 1000 - offset;
+      const t0Ref = { current: performance.now() / 1000 - offset };
+
       tts.speak({
         text: configRef.current.body,
         rate: configRef.current.rate,
         pitch: configRef.current.pitch,
+        onStart: () => {
+          // Capture t0 exactly when speech begins (avoids the SpeechSynthesis queue delay)
+          t0Ref.current = performance.now() / 1000 - offset;
+          startAnimLoop(() => performance.now() / 1000 - t0Ref.current, dur);
+        },
         onEnd: () => {
           setPlaying(false);
           stopAnimLoop();
           setStatus("Playback complete");
         },
       });
-      startAnimLoop(() => performance.now() / 1000 - t0, dur);
     },
     [audioSync, generated, startAnimLoop, stopAnimLoop, totalDuration, tts],
   );

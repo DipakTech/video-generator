@@ -31,7 +31,9 @@ export function useAudioSync(): AudioSyncApi {
   const sourceRef = useRef<AudioBufferSourceNode | null>(null);
   const gainRef = useRef<GainNode | null>(null);
   const destRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  // Wall-clock time (ctx.currentTime) when playback started for the current source
   const startedAtRef = useRef(0);
+  // Audio file offset that was used when the current source started
   const offsetRef = useRef(0);
   const playingRef = useRef(false);
 
@@ -74,7 +76,12 @@ export function useAudioSync(): AudioSyncApi {
     return audioBuffer.duration;
   }, [ensureGraph]);
 
-  const createSource = useCallback((offsetSec: number, onEnded?: EndCallback): AudioBufferSourceNode | null => {
+  /**
+   * Create and start a new AudioBufferSourceNode.
+   * We resume the AudioContext first (it may be suspended by autoplay policy)
+   * and only record startedAt AFTER the resume so that getCurrentTime is accurate.
+   */
+  const createSource = useCallback(async (offsetSec: number, onEnded?: EndCallback): Promise<AudioBufferSourceNode | null> => {
     const ctx = ensureCtx();
     const buffer = bufferRef.current;
     if (!buffer) return null;
@@ -83,73 +90,78 @@ export function useAudioSync(): AudioSyncApi {
     const gain = gainRef.current;
     if (!gain) return null;
 
+    // Resume suspended context (browser autoplay policy) and await it
+    // so ctx.currentTime is advancing before we record startedAt.
+    if (ctx.state === 'suspended') {
+      await ctx.resume();
+    }
+
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(gain);
-    if (onEnded) source.onended = onEnded;
+
     source.start(0, Math.max(0, offsetSec));
 
+    // Record timing AFTER resume so ctx.currentTime matches real wall clock
     startedAtRef.current = ctx.currentTime - offsetSec;
     offsetRef.current = offsetSec;
     sourceRef.current = source;
     playingRef.current = true;
 
+    if (onEnded) {
+      source.onended = () => {
+        // Only fire if we weren't explicitly stopped (playingRef still true)
+        if (playingRef.current) onEnded();
+      };
+    }
+
     return source;
   }, [ensureCtx, ensureGraph]);
 
-  const stop = useCallback((): void => {
+  /** Stop the current source without changing offsetRef (caller manages offset). */
+  const stopSource = useCallback((): void => {
     try {
       sourceRef.current?.stop();
     } catch {
-      // ignore if already stopped
+      // already stopped
     }
     sourceRef.current = null;
     playingRef.current = false;
-    offsetRef.current = 0;
-    startedAtRef.current = 0;
-
-    if (ctxRef.current?.state === 'suspended') {
-      void ctxRef.current.resume();
-    }
   }, []);
 
+  const stop = useCallback((): void => {
+    stopSource();
+    offsetRef.current = 0;
+    startedAtRef.current = 0;
+  }, [stopSource]);
+
   const play = useCallback((offsetSec = 0, onEnded?: EndCallback): void => {
-    stop();
-    if (ctxRef.current?.state === 'suspended') {
-      void ctxRef.current.resume();
-    }
-    createSource(offsetSec, onEnded);
-  }, [createSource, stop]);
+    stopSource();
+    offsetRef.current = offsetSec;
+    void createSource(offsetSec, onEnded);
+  }, [createSource, stopSource]);
 
   const pause = useCallback((): void => {
     if (!playingRef.current) return;
     const ctx = ctxRef.current;
+    // Snapshot the current playback position BEFORE stopping the source
     if (ctx) {
       offsetRef.current = ctx.currentTime - startedAtRef.current;
     }
-    try {
-      sourceRef.current?.stop();
-    } catch {
-      // ignore if already stopped
-    }
-    sourceRef.current = null;
-    playingRef.current = false;
-
-    if (ctx?.state === 'running') {
-      void ctx.suspend();
-    }
-  }, []);
+    stopSource();
+    // Do NOT suspend the AudioContext — resuming it is async and adds latency
+  }, [stopSource]);
 
   const resume = useCallback((onEnded?: EndCallback): void => {
-    if (ctxRef.current?.state === 'suspended') {
-      void ctxRef.current.resume();
-    }
-    createSource(offsetRef.current, onEnded);
+    void createSource(offsetRef.current, onEnded);
   }, [createSource]);
 
   const getCurrentTime = useCallback((): number => {
     const ctx = ctxRef.current;
-    if (!ctx || !playingRef.current) return offsetRef.current;
+    if (!ctx || !playingRef.current) {
+      // Not playing — return the last known offset (pause position)
+      return offsetRef.current;
+    }
     return ctx.currentTime - startedAtRef.current;
   }, []);
 

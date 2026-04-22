@@ -22,6 +22,11 @@ interface DrawConfig {
   animMode?: 'highlight' | 'typewriter' | 'bounce' | 'fade' | 'glow';
 }
 
+export interface LayoutResult {
+  words: PositionedWordTiming[];
+  totalTextH: number;
+}
+
 function buildFontStack(fontFamily?: string): string {
   if (!fontFamily || fontFamily === 'default') {
     return `${DEVANAGARI_FALLBACK}, sans-serif`;
@@ -37,11 +42,20 @@ function get2dContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
   return ctx;
 }
 
+/** Height of the brand header as a fraction of canvas height */
+const HEADER_H_FRACTION = 0.14;
+
+/**
+ * Layout words into absolute (virtual-document) positions.
+ * Words always start at the top of the body area so that overflow text
+ * can be revealed by scrolling.  Returns the positioned words AND the
+ * total virtual text height so callers can detect teleprompter mode.
+ */
 export function layoutWords(
   canvas: HTMLCanvasElement,
   timings: WordTiming[],
   config: LayoutConfig,
-): PositionedWordTiming[] {
+): LayoutResult {
   const {
     w,
     h,
@@ -56,10 +70,11 @@ export function layoutWords(
   const pad = w * padFraction;
   const maxW = w - pad * 2;
   const lh = bodySize * lineHeightMult;
-  const headerH = h * 0.14;
+  const headerH = h * HEADER_H_FRACTION;
 
   ctx.font = `${bodySize}px ${fontStack}`;
 
+  // Word-wrap into lines
   const lines: number[][] = [];
   let line: number[] = [];
   let lineW = 0;
@@ -78,7 +93,13 @@ export function layoutWords(
 
   const totalTextH = lines.length * lh;
   const availH = h - headerH;
-  const startY = headerH + (availH - totalTextH) / 2 + bodySize;
+
+  // If text fits: vertically centre within the available body area (legacy behaviour).
+  // If text overflows: start at the top of the body area so scroll reveals the rest.
+  const fitsVertically = totalTextH <= availH;
+  const startY = fitsVertically
+    ? headerH + (availH - totalTextH) / 2 + bodySize
+    : headerH + lh * 0.5; // small top-padding when scrolling
 
   const laid: PositionedWordTiming[] = timings.map((wt) => ({
     ...wt,
@@ -112,23 +133,85 @@ export function layoutWords(
     });
   });
 
-  return laid;
+  return { words: laid, totalTextH };
 }
 
+/**
+ * Compute the scroll offset (pixels) the canvas body area should be shifted
+ * upward so that the currently-spoken word is roughly centred in the viewport.
+ *
+ * @param timings   All positioned word timings (y values are absolute/virtual).
+ * @param t         Current playback time in seconds.
+ * @param h         Canvas height in pixels.
+ * @param totalTextH Total virtual text height from layoutWords.
+ */
+export function computeScrollY(
+  timings: PositionedWordTiming[],
+  t: number,
+  h: number,
+  totalTextH: number,
+): number {
+  const headerH = h * HEADER_H_FRACTION;
+  const availH = h - headerH;
+
+  // If all text fits there is nothing to scroll
+  if (totalTextH <= availH) return 0;
+
+  // Find the word currently being spoken (or the last spoken word)
+  let activeWord: PositionedWordTiming | null = null;
+  for (const wt of timings) {
+    if (t >= wt.startTime) activeWord = wt;
+    if (t < wt.endTime) break;
+  }
+
+  // Fall back to first / last word
+  if (!activeWord) activeWord = timings[0] ?? null;
+  if (!activeWord) return 0;
+
+  // We want the active word to appear at ~40% down the body area
+  const targetYInView = availH * 0.4;
+  // activeWord.y is the baseline in virtual space; shift by headerH to get body-relative
+  const wordBodyY = activeWord.y - headerH;
+  const rawScroll = wordBodyY - targetYInView;
+
+  // Clamp so we never scroll past start / end
+  const maxScroll = totalTextH - availH;
+  return Math.max(0, Math.min(rawScroll, maxScroll));
+}
+
+/**
+ * Draw a single video frame onto the canvas.
+ *
+ * @param canvas    Target canvas element (already sized).
+ * @param timings   Positioned word timings.
+ * @param config    Visual config.
+ * @param t         Current playback time in seconds.
+ * @param scrollY   Vertical scroll offset in pixels (0 = no scroll).
+ */
 export function drawFrame(
   canvas: HTMLCanvasElement,
   timings: PositionedWordTiming[],
   config: DrawConfig,
   t: number,
+  scrollY = 0,
 ): void {
   const { w, h, bgColor, accentColor, brand, fontFamily, animMode = 'highlight' } = config;
 
   const ctx = get2dContext(canvas);
   const fontStack = buildFontStack(fontFamily);
+  const headerH = h * HEADER_H_FRACTION;
 
   ctx.clearRect(0, 0, w, h);
   drawBackground(ctx, w, h, bgColor);
-  drawHeader(ctx, w, h, brand, fontStack);
+
+  // ── Scrollable body area ───────────────────────────────────────────────────
+  ctx.save();
+  // Clip to body area (below header)
+  ctx.beginPath();
+  ctx.rect(0, headerH, w, h - headerH);
+  ctx.clip();
+  // Shift content upward by scrollY
+  ctx.translate(0, -scrollY);
 
   ctx.textBaseline = 'alphabetic';
 
@@ -165,7 +248,24 @@ export function drawFrame(
     }
     ctx.restore();
   });
+
+  ctx.restore(); // restore clip + translate
+
+  // ── Fixed header — drawn on top after restore ──────────────────────────────
+  drawHeader(ctx, w, h, brand, fontStack);
+
+  // ── Subtle fade at top of body when scrolled ───────────────────────────────
+  if (scrollY > 2) {
+    const fadeH = headerH * 0.6;
+    const grad = ctx.createLinearGradient(0, headerH, 0, headerH + fadeH);
+    grad.addColorStop(0, bgColor + 'dd');
+    grad.addColorStop(1, bgColor + '00');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, headerH, w, fadeH);
+  }
 }
+
+// ── Private drawing helpers ──────────────────────────────────────────────────
 
 function drawBackground(
   ctx: CanvasRenderingContext2D,
